@@ -1,0 +1,48 @@
+name: Scrape Gibraltar Tariff Codes
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run scraper
+        run: |
+          mkdir -p data
+          python export_gibraltar_tariff.py --outfile data/gibraltar_harmonised_codes.csv
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gibraltar-harmonised-codes
+          path: data/gibraltar_harmonised_codes.csv
+
+      - name: Commit CSV back to repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/gibraltar_harmonised_codes.csv || echo "Nothing to add"
+          git commit -m "Update Gibraltar harmonised codes CSV [skip ci]" || echo "No changes to commit"
+          git push || echo "No changes pushed"
