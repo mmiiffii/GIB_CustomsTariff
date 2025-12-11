@@ -7,7 +7,7 @@ on:
     - cron: "0 2 * * 0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   scrape:
@@ -41,3 +41,11 @@ jobs:
           path: |
             data/gibraltar_harmonised_codes.csv
             data/gibraltar_chapters.csv
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/gibraltar_harmonised_codes.csv data/gibraltar_chapters.csv
+          git diff --cached --quiet || git commit -m "Update Gibraltar tariff codes (automated)"
+          git push
