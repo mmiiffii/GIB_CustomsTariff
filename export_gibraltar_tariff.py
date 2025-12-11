@@ -11,10 +11,7 @@ from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.hmcustoms.gov.gi/portal/services/tariff/print.jsf?c={chapter}"
 
-# Match full Gibraltar-style codes like:
-# 0101210000-00-00
-# 0102292*00-2*-00
-# 010129**00-**-00
+# Match full Gibraltar-style codes
 CODE_PATTERN = re.compile(
     r"\b[0-9*]{10}-[0-9*]{2}-[0-9*]{2}\b"
 )
@@ -22,7 +19,7 @@ CODE_PATTERN = re.compile(
 
 def fetch_chapter_text(chapter: int) -> str:
     """Fetch raw text for a chapter from the Gibraltar HM Customs tariff."""
-    chapter_str = f"{chapter:02d}"  # 1 -> "01", 10 -> "10"
+    chapter_str = f"{chapter:02d}"
     url = BASE_URL.format(chapter=chapter_str)
 
     resp = requests.get(
@@ -38,66 +35,118 @@ def fetch_chapter_text(chapter: int) -> str:
 
 
 def extract_chapter_name(text: str, chapter: int) -> str:
-    """
-    Extract the 'chapter name' line, e.g.
-    'CHAPTER 01 - LIVE ANIMALS' from a line like:
-    '01 CHAPTER 01 - LIVE ANIMALS'
-    """
+    """Extract the chapter title"""
     chapter_str = f"{chapter:02d}"
     for line in text.splitlines():
         line = line.strip()
-        if not line:
-            continue
-
-        m = re.match(rf"^{chapter_str}\s+(CHAPTER\s+.+)$", line)
-        if m:
-            return m.group(1).strip()
-
+        if line.startswith("CHAPTER ") and chapter_str in line:
+            return line.strip()
     return ""
 
 
-def extract_codes_from_text(text: str, chapter: int) -> List[Dict[str, str]]:
-    """Extract (chapter, code, description) from the chapter text."""
+def extract_hierarchy_from_text(text: str, chapter: int) -> List[Dict[str, str]]:
+    """
+    Extract complete hierarchy with descriptions for each level:
+    chapter → heading (with description) → subheading (with description) → code (with description)
+    """
     records = []
-    seen = set()  # dedupe by (chapter, code, description)
-
-    for line in text.splitlines():
-        line = line.strip()
+    seen = set()
+    
+    lines = text.splitlines()
+    chapter_str = f"{chapter:02d}"
+    
+    current_heading = ""
+    current_heading_desc = ""
+    current_subheading = ""
+    current_subheading_desc = ""
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
         if not line:
+            i += 1
             continue
-
+        
+        # Skip chapter title and headers
+        if line.startswith("CHAPTER ") or line in ["Chapter", "Heading", "Article Description"]:
+            i += 1
+            continue
+        
+        # Check for 4-digit heading (e.g., "0101")
+        if len(line) == 4 and line.isdigit() and not CODE_PATTERN.match(line):
+            current_heading = line
+            current_subheading = ""
+            current_heading_desc = ""
+            current_subheading_desc = ""
+            
+            # Get heading description from next line if available
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not next_line.isdigit() and not CODE_PATTERN.match(next_line):
+                    current_heading_desc = next_line
+                    i += 1
+            i += 1
+            continue
+        
+        # Check for 5-digit subheading (e.g., "01012")
+        if (len(line) == 5 and line.isdigit() and 
+            line.startswith(current_heading) and not CODE_PATTERN.match(line)):
+            current_subheading = line
+            current_subheading_desc = ""
+            
+            # Get subheading description from next line if available
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not next_line.isdigit() and not CODE_PATTERN.match(next_line):
+                    current_subheading_desc = next_line
+                    i += 1
+            i += 1
+            continue
+        
+        # Check for tariff codes
         for match in CODE_PATTERN.finditer(line):
             code = match.group(0)
-
-            # Description: everything AFTER the code occurrence on that line
+            
+            # Get description from rest of current line or next line
             desc = line[match.end():].strip()
             desc = desc.lstrip(" -–—:")
-
-            key = (chapter, code, desc)
+            
+            if not desc and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and not CODE_PATTERN.match(next_line):
+                    desc = next_line
+            
+            key = (chapter_str, current_heading, current_heading_desc, 
+                   current_subheading, current_subheading_desc, code, desc)
             if key in seen:
                 continue
             seen.add(key)
-
-            records.append(
-                {
-                    "chapter": f"{chapter:02d}",
-                    "code": code,
-                    "description": desc,
-                }
-            )
-
+            
+            records.append({
+                "chapter": chapter_str,
+                "heading": current_heading,
+                "heading_description": current_heading_desc,
+                "subheading": current_subheading,
+                "subheading_description": current_subheading_desc,
+                "code": code,
+                "description": desc,
+            })
+        
+        i += 1
+    
     return records
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Export Gibraltar harmonised tariff codes and chapters to CSV."
+        description="Export complete Gibraltar harmonised tariff structure to CSV."
     )
     parser.add_argument(
-        "--codes-outfile",
-        default="gibraltar_harmonised_codes.csv",
-        help="Output CSV file path for codes "
-             "(default: gibraltar_harmonised_codes.csv)",
+        "--hierarchy-outfile",
+        default="gibraltar_tariff_hierarchy.csv",
+        help="Output CSV file path for complete hierarchy "
+             "(default: gibraltar_tariff_hierarchy.csv)",
     )
     parser.add_argument(
         "--chapters-outfile",
@@ -121,35 +170,27 @@ def main():
             print(f"  !! Request error for chapter {chapter:02d}: {e}")
             continue
 
-        # Extract chapter name once per chapter
+        # Extract chapter name
         chapter_name = extract_chapter_name(text, chapter)
-        if chapter_name:
-            chapter_records.append(
-                {
-                    "chapter": f"{chapter:02d}",
-                    "chapter_title": chapter_name,
-                }
-            )
-        else:
-            chapter_records.append(
-                {
-                    "chapter": f"{chapter:02d}",
-                    "chapter_title": "",
-                }
-            )
+        chapter_records.append({
+            "chapter": f"{chapter:02d}",
+            "chapter_title": chapter_name,
+        })
 
-        # Extract individual codes
-        chapter_codes = extract_codes_from_text(text, chapter)
-        print(f"  -> found {len(chapter_codes)} codes")
-        all_records.extend(chapter_codes)
+        # Extract complete hierarchy
+        hierarchy_records = extract_hierarchy_from_text(text, chapter)
+        print(f"  -> found {len(hierarchy_records)} codes")
+        all_records.extend(hierarchy_records)
 
         time.sleep(0.3)
 
-    # Global dedupe for codes
+    # Global dedupe
     final_seen = set()
     deduped_records = []
     for rec in all_records:
-        key = (rec["chapter"], rec["code"], rec["description"])
+        key = (rec["chapter"], rec["heading"], rec["heading_description"], 
+               rec["subheading"], rec["subheading_description"], 
+               rec["code"], rec["description"])
         if key in final_seen:
             continue
         final_seen.add(key)
@@ -157,39 +198,38 @@ def main():
 
     print(f"Total codes collected: {len(deduped_records)}")
 
-    # Ensure /data dirs exist for both outputs
-    codes_out_file = args.codes_outfile
-    chapters_out_file = args.chapters_outfile
-
-    for path in (codes_out_file, chapters_out_file):
+    # Ensure output directories exist
+    for path in (args.hierarchy_outfile, args.chapters_outfile):
         out_dir = os.path.dirname(path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
 
-    # Write codes CSV
-    with open(codes_out_file, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["chapter", "code", "description"])
+    # Write hierarchy CSV
+    with open(args.hierarchy_outfile, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, 
+            fieldnames=[
+                "chapter", 
+                "heading", 
+                "heading_description",
+                "subheading", 
+                "subheading_description",
+                "code", 
+                "description"
+            ]
+        )
         writer.writeheader()
         writer.writerows(deduped_records)
 
-    print(f"Wrote codes CSV to {codes_out_file}")
-
-    # Dedupe chapter entries by chapter
-    chapters_seen = set()
-    chapters_clean = []
-    for rec in chapter_records:
-        if rec["chapter"] in chapters_seen:
-            continue
-        chapters_seen.add(rec["chapter"])
-        chapters_clean.append(rec)
+    print(f"Wrote hierarchy CSV to {args.hierarchy_outfile}")
 
     # Write chapters CSV
-    with open(chapters_out_file, "w", newline="", encoding="utf-8") as f:
+    with open(args.chapters_outfile, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["chapter", "chapter_title"])
         writer.writeheader()
-        writer.writerows(chapters_clean)
+        writer.writerows(chapter_records)
 
-    print(f"Wrote chapters CSV to {chapters_out_file}")
+    print(f"Wrote chapters CSV to {args.chapters_outfile}")
 
 
 if __name__ == "__main__":
