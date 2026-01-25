@@ -31,7 +31,7 @@ jobs:
         run: |
           mkdir -p data
           python export_gibraltar_tariff.py \
-            --codes-outfile data/gibraltar_harmonised_codes.csv \
+            --hierarchy-outfile data/gibraltar_harmonised_codes.csv \
             --chapters-outfile data/gibraltar_chapters.csv
 
       - name: Upload CSV artifacts
